@@ -21,4 +21,4 @@ make
 ./deltoidUI
 ```
 
-# README TBD, deltoid makes false claims.
+# README TBD.
