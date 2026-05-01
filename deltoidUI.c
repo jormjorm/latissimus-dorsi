@@ -34,7 +34,17 @@ static void on_execute_clicked(GtkButton *button, gpointer user_data) {
     gtk_text_buffer_get_start_iter(buffer, &start);
     gtk_text_buffer_get_end_iter(buffer, &end);
     gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
-    g_print("Execute clicked. Script content:\n%s\n", text);
+
+    // Write to the file that injected_lib's script watcher monitors
+    FILE *f = fopen("/tmp/deltoid_exec.lua", "w");
+    if (f) {
+        fwrite(text, 1, strlen(text), f);
+        fclose(f);
+        g_print("Script sent to executor (%zu bytes)\n", strlen(text));
+    } else {
+        g_printerr("Failed to write script to /tmp/deltoid_exec.lua\n");
+    }
+
     g_free(text);
 }
 

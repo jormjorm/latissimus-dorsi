@@ -1,0 +1,14 @@
+# Binaries
+deltoidUI
+injector
+libdeltoid.so
+*.o
+
+# Temporary files
+/tmp/deltoid_exec.lua
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo

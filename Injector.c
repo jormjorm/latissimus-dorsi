@@ -28,6 +28,24 @@ int main(void) {
         return 1;
     }
 
+    // Check if libdeltoid.so exists
+    char so_path[PATH_MAX];
+    snprintf(so_path, sizeof(so_path), "%s/libdeltoid.so", home);
+
+    if (access(so_path, F_OK) != 0) {
+        fprintf(stderr, "[ deltoid error ] libdeltoid.so not found at %s\n", so_path);
+        fprintf(stderr, "[ deltoid error ] Make sure you ran 'make' and that libdeltoid.so is in your home directory\n");
+        fprintf(stderr, "[ deltoid error ] You can copy it with: cp libdeltoid.so ~\n");
+        return 1;
+    }
+
+    // Check if the .so is readable
+    if (access(so_path, R_OK) != 0) {
+        fprintf(stderr, "[ deltoid error ] libdeltoid.so is not readable at %s\n", so_path);
+        fprintf(stderr, "[ deltoid error ] Try: chmod 644 %s\n", so_path);
+        return 1;
+    }
+
     printf("\033[1;36m[ deltoid ]\033[0m initializing...\n");
 
     // reset any existing overrides
@@ -38,14 +56,14 @@ int main(void) {
     if (!cmd) return 1;
 
     snprintf(cmd, PATH_MAX + 256,
-        "flatpak override --user --filesystem='%s/libdeltoid.so':ro org.vinegarhq.Sober",
-        home);
+        "flatpak override --user --filesystem='%s':ro org.vinegarhq.Sober",
+        so_path);
     run(cmd);
 
     // set LD_PRELOAD hook
     snprintf(cmd, PATH_MAX + 256,
-        "flatpak override --user --env=LD_PRELOAD='%s/libdeltoid.so' org.vinegarhq.Sober",
-        home);
+        "flatpak override --user --env=LD_PRELOAD='%s' org.vinegarhq.Sober",
+        so_path);
 
     if (run(cmd) == 0)
         printf("\033[1;32m[ deltoid ]\033[0m hook set. launch sober now.\n");

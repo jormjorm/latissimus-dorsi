@@ -262,31 +262,134 @@ static void* script_watcher(void* arg)
 __attribute__((constructor))
 static void deltoid_init(void)
 {
-    void* handle = dlopen("libSoberRuntime.so", RTLD_LAZY | RTLD_NOLOAD);
-    if (!handle) {
-        fprintf(stderr, "[ deltoid ] libSoberRuntime.so not loaded\n");
-        return;
+    // Modern Sober uses different libraries; try multiple possible names
+    // The Lua runtime is typically in the main sober binary or libloader.so
+    const char* lib_names[] = {
+        "libloader.so",
+        "sober",
+        "libmimalloc.so",
+        "libbadcpu.so",
+        NULL
+    };
+
+    void* handle = NULL;
+    const char** name = lib_names;
+    while (*name) {
+        handle = dlopen(*name, RTLD_LAZY | RTLD_NOLOAD);
+        if (handle) {
+            printf("[ deltoid ] found library: %s\n", *name);
+            break;
+        }
+        name++;
     }
 
-    struct link_map* map = NULL;
-    dlinfo(handle, RTLD_DI_LINKMAP, &map);
-    uintptr_t base = (uintptr_t)map->l_addr;
+    if (!handle) {
+        fprintf(stderr, "[ deltoid ] no suitable library found, scanning all maps\n");
+        // Fall through - we'll scan /proc/self/maps for any loaded library
+    }
+
+    // Get base address by scanning /proc/self/maps if dlopen fails
+    uintptr_t base = 0;
+    if (handle) {
+        struct link_map* map = NULL;
+        dlinfo(handle, RTLD_DI_LINKMAP, &map);
+        base = (uintptr_t)map->l_addr;
+    } else {
+        // Scan /proc/self/maps to find the main executable or a suitable library
+        FILE* maps = fopen("/proc/self/maps", "r");
+        if (maps) {
+            char line[512];
+            while (fgets(line, sizeof(line), maps)) {
+                // Look for executable segments (contains 'x' in permissions)
+                if (strstr(line, "x") && (strstr(line, "sober") || strstr(line, "libloader"))) {
+                    // Parse the start address
+                    uintptr_t addr = strtoul(line, NULL, 16);
+                    if (addr > base) base = addr;
+                }
+            }
+            fclose(maps);
+        }
+    }
+
+    if (base == 0) {
+        // Fallback: scan from a reasonable starting point
+        // Most executables are loaded around 0x400000 or higher
+        printf("[ deltoid ] warning: could not determine base, using default scan range\n");
+        base = 0x400000;
+    }
 
     // scan for functions  ( search up to 96 MB )
+    // Patterns may need updating with Sober versions - try multiple patterns
     uintptr_t end = base + 0x6000000;
 
-    r_pcall       = (r_lua_pcall)      scan_memory(base, end,
-        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B D9");
-    r_pushstring  = (r_lua_pushstring) scan_memory(base, end,
-        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B F2");
-    r_pushcclosure= (r_lua_pushcclosure)scan_memory(base, end,
-        "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 20 4C 8B D1");
-    r_loadstring  = (r_luaL_loadstring) scan_memory(base, end,
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 8B 01 48 FF 60 10");
-    r_tostring    = (r_lua_tostring)    scan_memory(base, end,
-        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B DA 48 8B D1");
-    r_setfield    = (r_lua_setfield)    scan_memory(base, end,
-        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B DA");
+    // Try multiple patterns for each function (Sober updates change these)
+    // Pattern format: space-separated hex bytes, ? = wildcard
+
+    // pcall patterns
+    const char* pcall_patterns[] = {
+        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B D9",  // original
+        "48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 56 41 57 48 83 EC 20",  // alt 1
+        NULL
+    };
+    for (const char** p = pcall_patterns; *p; p++) {
+        r_pcall = (r_lua_pcall)scan_memory(base, end, *p);
+        if (r_pcall) break;
+    }
+
+    // pushstring patterns
+    const char* pushstring_patterns[] = {
+        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B F2",  // original
+        "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B D6",  // alt 1
+        NULL
+    };
+    for (const char** p = pushstring_patterns; *p; p++) {
+        r_pushstring = (r_lua_pushstring)scan_memory(base, end, *p);
+        if (r_pushstring) break;
+    }
+
+    // pushcclosure patterns
+    const char* pushcclosure_patterns[] = {
+        "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 20 4C 8B D1",  // original
+        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B D9 49 8B F0",  // alt 1
+        NULL
+    };
+    for (const char** p = pushcclosure_patterns; *p; p++) {
+        r_pushcclosure = (r_lua_pushcclosure)scan_memory(base, end, *p);
+        if (r_pushcclosure) break;
+    }
+
+    // loadstring patterns
+    const char* loadstring_patterns[] = {
+        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 8B 01 48 FF 60 10",  // original
+        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 8B 00 48 FF 60 18",  // alt 1
+        NULL
+    };
+    for (const char** p = loadstring_patterns; *p; p++) {
+        r_loadstring = (r_luaL_loadstring)scan_memory(base, end, *p);
+        if (r_loadstring) break;
+    }
+
+    // tostring patterns
+    const char* tostring_patterns[] = {
+        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B DA 48 8B D1",  // original
+        "48 89 5C 24 ? 48 89 74 24 ? 48 83 EC 20 48 8B 5C 24 ? 48 8B D3",  // alt 1
+        NULL
+    };
+    for (const char** p = tostring_patterns; *p; p++) {
+        r_tostring = (r_lua_tostring)scan_memory(base, end, *p);
+        if (r_tostring) break;
+    }
+
+    // setfield patterns
+    const char* setfield_patterns[] = {
+        "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 20 48 8B DA",  // original
+        "48 89 5C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 57 48 83 EC 20 48 8B D3",  // alt 1
+        NULL
+    };
+    for (const char** p = setfield_patterns; *p; p++) {
+        r_setfield = (r_lua_setfield)scan_memory(base, end, *p);
+        if (r_setfield) break;
+    }
 
     printf("[ deltoid ] scan results:\n");
     printf("  pcall=%p pushstring=%p pushcclosure=%p\n",
